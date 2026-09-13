@@ -25,6 +25,11 @@ What you get is **blast radius**: everything outside the grant is out of reach.
 - **Anything inside a granted directory.** Agents need delete to work: git
   checkout, npm install and every build unlink and recreate files. Recoverability
   (a git remote, snapshots) protects that tree, not access control.
+- **Code you run from a root.** An agent can write git hooks, `package.json`
+  scripts and build files. When you run `git commit` or `npm test` in that tree,
+  that code runs as you. It's the same trust you give any repo you clone and run
+  commands in. A global `core.hooksPath` doesn't close this: the repo's own
+  `.git/config` is agent-writable and takes precedence.
 
 ## Layout
 
@@ -63,13 +68,24 @@ stores worktree locations as absolute paths, so move a repo together with its
 linked worktrees, then repair. A moved tree keeps its old permissions, and the
 agent can't use it until `apply` runs. For a local repository, use
 `git clone --no-hardlinks`; files hard-linked to somewhere outside the root are
-refused.
+refused. pnpm can hard-link `node_modules` to its store outside the root. If
+`apply` refuses those files, set pnpm's `package-import-method=copy` (not
+tested).
 
 Claude Code files each project's memories and sessions under its path. A moved
 repo therefore starts fresh, both for you and for the agent, until you carry
 them over; [docs/accounts.md](docs/accounts.md) shows how.
 
 Auditing is `ls -le`. Tests: `./test.sh`.
+
+**Keep this repo outside the roots.** `agent-grant` runs as root. If an agent
+can edit it, your next `sudo agent-grant apply` runs those edits as root. To
+let an agent work on this repo anyway, run sudo only on a root-owned copy, and
+re-install it only after reading the diff:
+
+```
+sudo install -m 755 -o root -g wheel agent-grant /usr/local/sbin/agent-grant
+```
 
 ## Launching
 
@@ -94,3 +110,5 @@ folder name containing `'` or `$` breaks it; see
   including the surprises.
 - [docs/accounts.md](docs/accounts.md): setting up an agent account, launching
   it with sudo, and git inside roots.
+- [docs/next-steps.md](docs/next-steps.md): open work, including the Linux port
+  plan.

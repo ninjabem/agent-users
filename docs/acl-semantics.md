@@ -98,9 +98,11 @@ run reconcile after any rsync-based restore.
   target, which can be anywhere. Reconcile runs as root, so a symlink inside a
   root pointing at another root, or at a system directory, would get the grant
   written there. `chmod -h` writes to the link itself instead.
-- **`chmod -h` protects only the last path component.** If a directory along
-  the path is swapped for a symlink between the scan and the write, the write
-  lands under the symlink's target. That takes an agent actively racing
+- **`chmod -h` protects only against a symlink in the last path component.** If
+  a directory along the path is swapped for a symlink between the scan and the
+  write, the write lands under the symlink's target. Renaming a hard link to an
+  outside file over a scanned path does the same, and `-h` can't help because
+  the path then names a regular file. Both take an agent actively racing
   reconcile, which is the hostile case this repo excludes. (Not tested.)
 - `find` does not follow symlinks by default (`-P`), so `find <root> ! -type l`
   only yields objects that really live under the root.
