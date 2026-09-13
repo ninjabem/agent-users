@@ -1,0 +1,225 @@
+#!/bin/bash
+#
+# agent-grant — make ACLs under the agents base match the convention.
+#
+#   agent-grant apply           fix drift, printing one line per change
+#   agent-grant apply --check   print drift, exit 1 if there is any
+#
+# There is no config file. The convention is the declared state:
+#
+#   - The base (/Users/Shared/agents, or $AGENT_GRANT_BASE) is owned by the
+#     human and is go-w.
+#   - Every non-hidden directory directly under the base is a root, and its
+#     group is agents-<name>.
+#   - A root is go-rwx and carries exactly two ACL entries, for the human and
+#     the group. Every regular file and directory below it carries those two
+#     entries inherited. Other object types are left alone.
+#   - Hard-linked files are refused, never granted: another link may be
+#     outside the root.
+#   - The human's home is go-rwx.
+#
+# Output lines are "<kind> <path>", where kind is mode or acl.
+# Exit status: 0 clean, 1 drift under --check, 2 error. An error on one root or
+# object doesn't stop apply fixing the rest, so exit 2 does not mean nothing
+# changed.
+#
+# The reasoning behind each chmod is in docs/acl-semantics.md.
+
+set -euo pipefail
+export LC_ALL=C
+
+base=${AGENT_GRANT_BASE:-/Users/Shared/agents}
+
+# Directory spellings. Files inherit the same bits and show them as
+# read,write,execute,delete,append,...
+rights=list,add_file,search,delete,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity
+file_rights=read,write,execute,delete,append,readattr,writeattr,readextattr,writeextattr,readsecurity
+inherit=file_inherit,directory_inherit
+
+check=0
+status=0
+
+usage() {
+	echo "usage: agent-grant apply [--check]" >&2
+	exit 2
+}
+
+die() {
+	echo "agent-grant: $*" >&2
+	exit 2
+}
+
+fail() {
+	echo "agent-grant: $*" >&2
+	status=2
+}
+
+# drift KIND PATH — print one difference. Under --check, exit status becomes 1.
+drift() {
+	printf '%s %s\n' "$1" "$2"
+	if [ "$check" = 1 ] && [ "$status" = 0 ]; then
+		status=1
+	fi
+}
+
+# ensure_mode PATH go-rwx|go-w — clear those bits if any are set.
+ensure_mode() {
+	local mask
+	case $2 in
+	go-rwx) mask=077 ;;
+	go-w) mask=022 ;;
+	esac
+	if [ $((8#$(stat -f %Lp "$1") & 8#$mask)) -ne 0 ]; then
+		drift mode "$1"
+		if [ "$check" = 0 ]; then
+			chmod "$2" "$1"
+		fi
+	fi
+}
+
+# ---- ACL backend: macOS chmod and ls. Every ACL call lives in this block. ----
+#
+# $human and $group are set per root by the main loop.
+
+# acl_want root|dir|file — the lines ls -le shows for a correct object.
+acl_want() {
+	local how=allow flags=,$inherit r=$rights
+	case $1 in
+	dir) how="inherited allow" ;;
+	file) how="inherited allow" flags="" r=$file_rights ;;
+	esac
+	printf ' 0: user:%s %s %s%s\n 1: group:%s %s %s%s' \
+		"$human" "$how" "$r" "$flags" "$group" "$how" "$r" "$flags"
+}
+
+# acl_of PATH — the ACL lines of PATH itself. ls -e is the only base tool that
+# prints an ACL, hence the SC2012 exception.
+acl_of() {
+	# shellcheck disable=SC2012
+	ls -ldeq "$1" | sed 1d
+}
+
+# chmod +a puts each new entry first, so adding the group before the human
+# gives the order inheritance produces. -h keeps chmod off symlink targets.
+acl_set_root() {
+	chmod -h -N "$1"
+	chmod -h +a "group:$group allow $rights,$inherit" "$1"
+	chmod -h +a "user:$human allow $rights,$inherit" "$1"
+}
+
+# acl_set_inherited LIST — LIST holds NUL-separated paths. The directory spec
+# works for files too; they drop the inherit flags on their own. Not atomic: a
+# failure after -N leaves objects with no ACL until the next run.
+acl_set_inherited() {
+	xargs -0 chmod -h -N <"$1" &&
+		xargs -0 chmod -h +ai "group:$group allow $rights,$inherit" <"$1" &&
+		xargs -0 chmod -h +ai "user:$human allow $rights,$inherit" <"$1"
+}
+
+# acl_scan ROOT — list descendants whose ACL is not the inherited pair in
+# $tmp/drift, and hard-linked files in $tmp/links. Only regular files and
+# directories: chmod blocks opening a fifo and fails on a socket.
+# ls -ldef keeps find's order, so the Nth header belongs to the Nth name. Fewer
+# headers than names means something vanished mid-scan and the pairing can't
+# be trusted, so the scan fails.
+acl_scan() {
+	: >"$tmp/drift"
+	: >"$tmp/links"
+	find "$1" -xdev -mindepth 1 \( -type f -o -type d \) -print0 >"$tmp/all" ||
+		fail "$1: could not read the whole tree"
+	[ -s "$tmp/all" ] || return 0
+	tr '\0' '\n' <"$tmp/all" >"$tmp/names"
+	if [ $(($(tr -cd '\0' <"$tmp/all" | wc -c))) -ne $(($(wc -l <"$tmp/names"))) ]; then
+		fail "$1: a name under it contains a newline; rename it first"
+		return 0
+	fi
+	{ xargs -0 ls -ldefq <"$tmp/all" 2>/dev/null || true; } |
+		WANT_DIR=$(acl_want dir) WANT_FILE=$(acl_want file) awk \
+			-v drift="$tmp/drift" -v links="$tmp/links" '
+			function flush() {
+				if (!n)
+					return
+				if (!dir && nlink > 1)
+					print name[n] > links
+				else if (acl != ENVIRON[dir ? "WANT_DIR" : "WANT_FILE"])
+					print name[n] > drift
+			}
+			NR == FNR { name[FNR] = $0; names = FNR; next }
+			/^ [0-9]+: / { acl = acl sep $0; sep = "\n"; next }
+			{ flush(); n++; dir = substr($0, 1, 1) == "d"; nlink = $2 + 0; acl = sep = "" }
+			END { flush(); exit (n != names) }
+		' "$tmp/names" -
+}
+
+# ---- main ----
+
+[ "${1-}" = apply ] || usage
+case $# in
+1) ;;
+2)
+	[ "$2" = --check ] || usage
+	check=1
+	;;
+*) usage ;;
+esac
+
+case $base in
+/*) ;;
+*) base=$PWD/$base ;;
+esac
+if [ ! -d "$base" ] || [ -L "$base" ]; then
+	die "$base: not a directory"
+fi
+
+human=$(stat -f %Su "$base")
+[ "$human" != root ] || die "$base: owned by root; its owner must be the human"
+home=$(id -P "$human" | cut -d: -f9)
+[ -d "$home" ] || die "$human: home directory '$home' not found"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-grant.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+ensure_mode "$home" go-rwx
+ensure_mode "$base" go-w
+
+for root in "$base"/*; do
+	if [ ! -d "$root" ] || [ -L "$root" ]; then
+		continue
+	fi
+	group=agents-${root##*/}
+	owner=$(stat -f %Su "$root")
+	if [ "$owner" != "$human" ]; then
+		fail "$root: owned by $owner, not $human"
+		continue
+	fi
+	if ! dscl . -read "/Groups/$group" PrimaryGroupID >/dev/null 2>&1; then
+		fail "$root: group $group does not exist"
+		continue
+	fi
+
+	ensure_mode "$root" go-rwx
+	if [ "$(acl_of "$root")" != "$(acl_want root)" ]; then
+		drift acl "$root"
+		if [ "$check" = 0 ]; then
+			acl_set_root "$root"
+		fi
+	fi
+
+	if ! acl_scan "$root"; then
+		fail "$root: the tree changed or could not be read during the scan; nothing under it was changed"
+		continue
+	fi
+	while IFS= read -r path; do
+		fail "$path: hard-linked, so it may also live outside the root; not granted"
+	done <"$tmp/links"
+	[ -s "$tmp/drift" ] || continue
+	while IFS= read -r path; do
+		drift acl "$path"
+	done <"$tmp/drift"
+	if [ "$check" = 0 ]; then
+		tr '\n' '\0' <"$tmp/drift" >"$tmp/drift0"
+		acl_set_inherited "$tmp/drift0" || fail "$root: some ACLs could not be set"
+	fi
+done
+
+exit "$status"
