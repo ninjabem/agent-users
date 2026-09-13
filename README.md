@@ -102,6 +102,10 @@ otherwise pass through. Your shell expands `$PWD` before sudo sees it, so a
 folder name containing `'` or `$` breaks it; see
 [docs/accounts.md](docs/accounts.md).
 
+Also install [agent-instructions.md](agent-instructions.md) for each agent
+account, so the agent knows it's restricted and doesn't try to work around it.
+The install command is in [docs/accounts.md](docs/accounts.md).
+
 ## Docs
 
 - [docs/home-exposure.md](docs/home-exposure.md): what an agent account can

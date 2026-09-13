@@ -82,6 +82,7 @@ Observed on 26.4.1, comparing `env` under each form:
 | `USER`          | `<vendor>`         | `<vendor>`            |
 | `HOME`          | yours              | `/Users/<vendor>`     |
 | `SSH_AUTH_SOCK` | yours              | yours                 |
+| `PATH`          | not checked        | yours, reordered      |
 
 - **Always `-i`.** Without it the agent gets your `HOME`, which it can't read.
 - **`-i` still passes your `SSH_AUTH_SOCK`,** probably through `env_keep` in
@@ -89,6 +90,12 @@ Observed on 26.4.1, comparing `env` under each form:
   is `srw-rw-rw-`, but it sits in a `drwx------` directory you own under
   `/var/run/com.apple.launchd.*`. That protection comes from launchd's
   directory mode, not from sudo, so drop the variable when launching.
+- **`-i` also keeps your `PATH`,** reordered. The login shell's `path_helper`
+  (run from `/etc/zprofile`) moves the `/etc/paths` entries to the front and
+  keeps yours after them. So the agent finds Homebrew tools through your PATH.
+  Tools can resolve differently: `python3` was `/usr/local/bin/python3` for the
+  agent but Homebrew's for you. PATH entries inside your home are dead ends for
+  the agent.
 - **With `-i`, the agent's login shell expands `$` in your command.**
   `sudo -u <vendor> -i sh -c 'd=/x; mkdir "$d"'` ran `mkdir ""` and printed
   `mkdir: .: No such file or directory`. The agent's zsh expanded `$d`, which is
@@ -159,3 +166,22 @@ What worked on 26.4.1 with Claude Code 2.1.270:
   `tar -C ~/.claude/projects -cf - ./<slug> | sudo -u <vendor> tar -C /Users/<vendor>/.claude/projects -xf -`.
   The `./` matters, because slugs start with `-`. Launched as the agent in the
   moved repo, `/resume` listed the old sessions and resumed a named one.
+
+## Telling the agent it's restricted
+
+The boundary doesn't depend on the agent knowing about it; the kernel enforces
+it either way. Telling it saves effort. An agent that hits `Permission denied`
+with no context tends to try workarounds, or asks you to loosen permissions.
+
+`agent-instructions.md` in this repo is a short user-level instruction file for
+agent accounts. It describes the limits without mapping what lies outside them.
+Install it wherever the vendor reads user-level instructions. For Claude Code
+that's `~/.claude/CLAUDE.md` in the agent's home; it isn't overwritten if one
+already exists:
+
+```
+sudo -u claude test -e /Users/claude/.claude/CLAUDE.md && echo "exists, not overwritten" || sudo -u claude tee /Users/claude/.claude/CLAUDE.md < agent-instructions.md > /dev/null
+```
+
+Your shell opens `agent-instructions.md`, so the agent never needs access to
+this repo. For other vendors, check their docs for the equivalent file.
