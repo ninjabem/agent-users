@@ -109,8 +109,14 @@ run reconcile after any rsync-based restore.
   count went to 2. `/private/etc/master.passwd` was refused with `EPERM`.
   `/private/etc`, `/Users/Shared` and `$TMPDIR` are one device. An ACL lives on
   the inode, so granting a hard-linked file inside a root would grant every
-  other link to it too, as root. Reconcile refuses hard-linked files. A local
-  `git clone` hard-links objects; use `--no-hardlinks` inside a root.
+  other link to it too, as root. Reconcile grants a hard-linked file only when
+  its scan of that root finds as many links to the inode as the link count
+  says, and refuses it otherwise.
+- **Hard links inside one tree are common.** npm links esbuild's binary between
+  `node_modules/esbuild/bin/esbuild` and
+  `node_modules/@esbuild/darwin-arm64/bin/esbuild`. Refusing every hard link
+  would fail any such project on every run. A local `git clone` from outside
+  the root hard-links objects back to the source repo; use `--no-hardlinks`.
 - **`chmod` on a fifo blocks** opening it when nothing is writing, while
   `ls -le` on it returns at once. **On a socket it fails** with
   `Operation not supported on socket`. Both verified in review. Reconcile only
@@ -129,6 +135,8 @@ run reconcile after any rsync-based restore.
 - If a file vanishes between `find` and `ls`, `ls` prints one header fewer and
   every later pairing shifts. Count headers against names and distrust the
   whole scan on a mismatch.
+- `ls -i` adds the inode as the first field of each header and leaves the ACL
+  lines unchanged.
 
 ## Principals resolve at write time
 

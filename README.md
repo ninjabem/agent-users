@@ -49,11 +49,25 @@ sudo agent-grant apply           # make the filesystem match the convention
 agent-grant apply --check        # print drift; exit 1 if there is any
 ```
 
-**Getting projects in:** `git clone` into a root. If you `mv` something in
-instead, run `sudo agent-grant apply` afterwards, because a moved tree keeps
-its old permissions and the agent can't use it until then. For a local
-repository, use `git clone --no-hardlinks`; hard-linked files are refused
-because another link may sit outside the root.
+**Getting projects in:** `git clone` into a root. To move an existing repo
+instead:
+
+```
+mv ~/work/proj /Users/Shared/agents/work/
+git -C /Users/Shared/agents/work/proj worktree repair <new path of each linked worktree>
+sudo agent-grant apply
+```
+
+Skip the middle line if `git worktree list` shows only the repo itself. Git
+stores worktree locations as absolute paths, so move a repo together with its
+linked worktrees, then repair. A moved tree keeps its old permissions, and the
+agent can't use it until `apply` runs. For a local repository, use
+`git clone --no-hardlinks`; files hard-linked to somewhere outside the root are
+refused.
+
+Claude Code files each project's memories and sessions under its path. A moved
+repo therefore starts fresh, both for you and for the agent, until you carry
+them over; [docs/accounts.md](docs/accounts.md) shows how.
 
 Auditing is `ls -le`. Tests: `./test.sh`.
 

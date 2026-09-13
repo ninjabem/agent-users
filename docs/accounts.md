@@ -111,6 +111,12 @@ Observed on 26.4.1, comparing `env` under each form:
   `sudo -u <vendor> -i git config --global safe.directory '*'`. The account can
   only reach the roots, so little is lost. With that set, `git status` as the
   agent works in a repo you own.
+- **Moving a repo breaks its worktrees.** Git records worktree locations as
+  absolute paths in both directions. After `mv`, `git worktree list` marks
+  linked worktrees prunable, and inside one git says "not a git repository".
+  `git -C <repo> worktree repair <new paths…>` fixed both a sibling worktree
+  and one nested inside the repo (`.claude/worktrees/…`). Verified with Apple
+  git 2.39.5.
 
 ## Claude Code in the account
 
@@ -132,3 +138,24 @@ What worked on 26.4.1 with Claude Code 2.1.270:
 - The `claude-agent` function from the README launched Claude Code, already
   logged in, in the project folder.
 - **Not tested:** whether it still authenticates after a restart.
+
+## Claude Code data when a repo moves
+
+- **Per-project memories and session transcripts are filed by path.** They live
+  in `~/.claude/projects/<slug>/`, where the slug is the absolute project path
+  with every character outside `A-Za-z0-9-` replaced by `-`:
+  `printf '%s' "$path" | tr -c 'A-Za-z0-9-' '-'`. Checked against five existing
+  folders, including `_` and `/-` in the path. After a move, Claude Code starts
+  that project fresh unless the folder is renamed to the new slug.
+- `~/.claude.json` also keys per-project entries by absolute path, so the
+  folder-trust prompt comes back after a move.
+- **Each account has its own `~/.claude`.** The agent account sees none of your
+  memories or sessions. To give it a project's, copy the slug folder into its
+  `~/.claude/projects/`.
+- Anything inside the repo moves with it: `CLAUDE.md`, `.claude/skills`,
+  `.claude/settings*.json`.
+- **Copying works, sessions included.** You read and the agent writes, so the
+  agent owns the copy:
+  `tar -C ~/.claude/projects -cf - ./<slug> | sudo -u <vendor> tar -C /Users/<vendor>/.claude/projects -xf -`.
+  The `./` matters, because slugs start with `-`. Launched as the agent in the
+  moved repo, `/resume` listed the old sessions and resumed a named one.

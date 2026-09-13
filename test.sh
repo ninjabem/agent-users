@@ -124,7 +124,7 @@ says "mode $AGENT_GRANT_BASE" "  names it"
 run 0 "apply fixes it" apply
 
 ln "$fixture/outside/secret" "$root/proj/hardlink"
-run 2 "a hard-linked file is an error" apply
+run 2 "a hard link from outside the root is an error" apply
 # ls -e is the only base tool that prints an ACL.
 # shellcheck disable=SC2012
 if grep -qF "$root/proj/hardlink:" "$out" &&
@@ -135,6 +135,18 @@ else
 fi
 rm "$root/proj/hardlink"
 run 0 "check is clean once the link is gone" apply --check
+
+# Both links inside the root, as npm does with esbuild's binary. Moved in, so
+# it starts with no ACL.
+touch "$fixture/outside/pair"
+mv "$fixture/outside/pair" "$root/proj/pair"
+ln "$root/proj/pair" "$root/proj/src/pair"
+run 1 "a hard link with every link in the root is ordinary drift" apply --check
+says "acl $root/proj/pair" "  names the first link"
+says "acl $root/proj/src/pair" "  names the second link"
+run 0 "apply grants it" apply
+run 0 "check is clean again" apply --check
+rm "$root/proj/pair" "$root/proj/src/pair"
 
 bad=$root/$(printf 'bad\nname')
 touch "$bad"

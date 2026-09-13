@@ -14,8 +14,8 @@
 #   - A root is go-rwx and carries exactly two ACL entries, for the human and
 #     the group. Every regular file and directory below it carries those two
 #     entries inherited. Other object types are left alone.
-#   - Hard-linked files are refused, never granted: another link may be
-#     outside the root.
+#   - A hard-linked file is granted only when every link to it is under the
+#     same root. Otherwise it is refused, since the other link could be anywhere.
 #   - The human's home is go-rwx.
 #
 # Output lines are "<kind> <path>", where kind is mode or acl.
@@ -117,8 +117,10 @@ acl_set_inherited() {
 }
 
 # acl_scan ROOT — list descendants whose ACL is not the inherited pair in
-# $tmp/drift, and hard-linked files in $tmp/links. Only regular files and
-# directories: chmod blocks opening a fifo and fails on a socket.
+# $tmp/drift. A drifted hard-linked file goes there only if the scan found every
+# link to its inode (npm links esbuild's binary this way); otherwise it goes in
+# $tmp/links. Only regular files and directories: chmod blocks opening a fifo
+# and fails on a socket.
 # ls -ldef keeps find's order, so the Nth header belongs to the Nth name. Fewer
 # headers than names means something vanished mid-scan and the pairing can't
 # be trusted, so the scan fails.
@@ -133,21 +135,35 @@ acl_scan() {
 		fail "$1: a name under it contains a newline; rename it first"
 		return 0
 	fi
-	{ xargs -0 ls -ldefq <"$tmp/all" 2>/dev/null || true; } |
+	{ xargs -0 ls -ldefiq <"$tmp/all" 2>/dev/null || true; } |
 		WANT_DIR=$(acl_want dir) WANT_FILE=$(acl_want file) awk \
 			-v drift="$tmp/drift" -v links="$tmp/links" '
 			function flush() {
-				if (!n)
+				if (!n || acl == ENVIRON[dir ? "WANT_DIR" : "WANT_FILE"])
 					return
-				if (!dir && nlink > 1)
-					print name[n] > links
-				else if (acl != ENVIRON[dir ? "WANT_DIR" : "WANT_FILE"])
+				if (!dir && nlink > 1) {
+					held[n] = inode
+					seen[inode]++
+					total[inode] = nlink
+				} else
 					print name[n] > drift
 			}
 			NR == FNR { name[FNR] = $0; names = FNR; next }
 			/^ [0-9]+: / { acl = acl sep $0; sep = "\n"; next }
-			{ flush(); n++; dir = substr($0, 1, 1) == "d"; nlink = $2 + 0; acl = sep = "" }
-			END { flush(); exit (n != names) }
+			{
+				flush()
+				n++
+				inode = $1
+				dir = substr($2, 1, 1) == "d"
+				nlink = $3 + 0
+				acl = sep = ""
+			}
+			END {
+				flush()
+				for (i in held)
+					print name[i] > (seen[held[i]] == total[held[i]] ? drift : links)
+				exit (n != names)
+			}
 		' "$tmp/names" -
 }
 
@@ -210,7 +226,7 @@ for root in "$base"/*; do
 		continue
 	fi
 	while IFS= read -r path; do
-		fail "$path: hard-linked, so it may also live outside the root; not granted"
+		fail "$path: hard-linked from outside the root; not granted"
 	done <"$tmp/links"
 	[ -s "$tmp/drift" ] || continue
 	while IFS= read -r path; do
